@@ -1,5 +1,5 @@
 ---
-title: "Characterising antigenic evolution of infectious pathogens"
+title: "Bayesian hierarchical regression for SARS-CoV-2 viral load trajectories"
 author: "Paula Weidemueller - adapted from Josh Blake & David Pascall"
 date: "27. March 2023"
 output: html_notebook
@@ -204,54 +204,13 @@ strong_strong <- brm(obs_ct ~ t + (1+t|i) + 0 + Intercept, data = larger_data,
                    cores = 4)
 summary(strong_strong)
 ```
-```{r}
-tmp1 <- as_tibble(predict(strong_strong)) %>% 
-  mutate(type='strong prior - strong data')
-tmp1$true <- larger_data$obs_ct
-tmp1$ID <- larger_data$i
-tmp1$time <- larger_data$t
 
-tmp2 <- as_tibble(predict(weak_strong)) %>% 
-  mutate(type='weak prior - strong data')
-tmp2$true <- larger_data$obs_ct
-tmp2$ID <- larger_data$i
-tmp2$time <- larger_data$t
-  
-tmp <- rbind(tmp1, tmp2)
-
-ggplot(data = filter(tmp, as.numeric(as.character(ID)) <21)) + 
-    geom_ribbon(aes(x = time, ymin = Q2.5, ymax = Q97.5, fill=type), alpha = 0.5) +
-    geom_point(aes(x = time, y = true)) +
-    scale_y_reverse() +
-    facet_wrap(~ ID, ncol = 4)
-```
-```{r}
-tmp1 <- as_tibble(predict(model_individual_differences)) %>% 
-  mutate(type='weak prior - weak data')
-tmp1$true <- data$obs_ct
-tmp1$ID <- data$i
-tmp1$time <- data$t
-
-tmp2 <- as_tibble(predict(strong_weak)) %>% 
-  mutate(type='strong prior - weak data')
-tmp2$true <- data$obs_ct
-tmp2$ID <- data$i
-tmp2$time <- data$t
-  
-tmp <- rbind(tmp1, tmp2)
-
-ggplot(data = filter(tmp, as.numeric(as.character(ID)) <21)) + 
-    geom_ribbon(aes(x = time, ymin = Q2.5, ymax = Q97.5, fill=type), alpha = 0.5) +
-    geom_point(aes(x = time, y = true)) +
-    scale_y_reverse() +
-    facet_wrap(~ ID, ncol = 4)
-```
 ```{r}
 smaller_data <- gen_data(5, 15)
 ```
 
 ```{r}
-##weak prior (i.e. initial), weakest data
+##weak prior (i.e. initial), weakest data (only 5 individuals)
 weak_weakest <- brm(obs_ct ~ t + (1+t|i) + 0 + Intercept, data = smaller_data,
                    family = gauss,
                    refresh = 0,
