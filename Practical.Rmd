@@ -1,0 +1,338 @@
+---
+title: "Characterising antigenic evolution of infectious pathogens"
+author: "Paula Weidemueller - adapted from Josh Blake & David Pascall"
+date: "27. March 2023"
+output: html_notebook
+---
+
+```{r}
+##load packages
+library(brms)
+library(tidyverse)
+
+##set the seed for the workshop
+set.seed(58)
+```
+
+```{r}
+##read in function for data generation
+gen_data <- function(n, times) {
+  tbl_data = tibble(
+    i = factor(1:n),
+  ) %>% 
+    mutate(
+      Ct_peak = rnorm(n(), 17.8, 2.2),
+      down_slope = pmax(rnorm(n(), 1.7, 1.7/4), 0.01),
+    ) %>% 
+    expand_grid(
+      t = 0:times,
+    ) %>% 
+    mutate(
+      true_ct = Ct_peak + down_slope * t,
+      obs_ct = rnorm(n(), true_ct, 3),
+    ) %>% 
+    group_by(i) %>% 
+    # Keep up until first pos test
+    filter(t <= min(c(t[obs_ct > 40], Inf))) %>% 
+    ungroup()
+  
+  tbl_data %>% 
+    ggplot(aes(colour = i, fill = i)) +
+    geom_line(aes(t, true_ct)) +
+    geom_point(aes(t, obs_ct)) +
+    theme(legend.position = "none")
+  
+  tbl_data %>% 
+    select(i, t, obs_ct) 
+  
+  return(tbl_data)}
+
+plot_predictions <- function(model, data) {
+  predictions <- as.data.frame(predict(model))
+  predictions$true <- data$obs_ct
+  predictions$ID <- data$i
+  predictions$time <- data$t
+  
+  ggplot(data = predictions) + 
+    geom_ribbon(aes(x = time, ymin = Q2.5, ymax = Q97.5), alpha = 0.5) +
+    geom_point(aes(x = time, y = true)) +
+    scale_y_reverse() +
+    facet_wrap(~ ID, ncol = 4)
+}
+
+```
+
+```{r}
+##generate data with 20 individuals and 15 time points
+data <- gen_data(20, 15)
+```
+
+```{r}
+##set up initial model with no priors
+
+##define the family of the data
+##here we assume the data is normally distributed by the linear predictor 
+##is on the log scale
+gauss <- gaussian("identity")
+```
+
+## Vanilla model, uniform prior, no hierarchy
+```{r}
+#here we use simple lme4 syntax
+#the lack of priors will give everything an improper uniform prior by default
+model_no_individual_differences <- brm(obs_ct ~ t + 0 + Intercept, data = data, 
+                                       family = gauss,
+                                       refresh = 0,
+                                       control = list(adapt_delta = 0.95),
+                                       cores = 4)
+#this should give the same estimate as the MLE
+```
+
+```{r}
+##like a frequentist glm we can get the parameter estimates and 
+##(credible) intervals with the summary() function
+summary(model_no_individual_differences)
+```
+
+
+```{r}
+plot_predictions(model_no_individual_differences, data)
+# => doesn't look too bad, but some data points are outside the 95% interval (grey band)
+# and the grey band is quite wide, so while most data can be explained by model is kind of too generic and not very precise for a given individual
+```
+```{r}
+##we can check if the distribution of predicted data from the model matches
+##the distribution of data we have observed
+pp_check(model_no_individual_differences)
+```
+
+```{r}
+##we can also view the traces of each individual parameter with the plot()
+##function
+plot(model_no_individual_differences)
+```
+
+```{r}
+##let's test that this is true
+freq_model_no_individual_differences <- glm(obs_ct ~ t, data = data, 
+                                            family = gaussian(link = "identity"))
+
+```
+
+```{r}
+summary(freq_model_no_individual_differences)
+summary(model_no_individual_differences)
+# => fits are very similar
+```
+## Add random effects, still uniform prior
+```{r}
+##now we'll add the random effects were were talking about earlier
+##both random slopes and random intercepts
+model_individual_differences <- brm(obs_ct ~ t + (1+t|i) + 0 + Intercept, data = data,
+                                    family = gauss, 
+                                    refresh = 0,
+                                    control = list(adapt_delta = 0.95),
+                                    cores = 4)
+summary(model_individual_differences)
+##this model may have given you a divergent transition
+##what precisely a divergent transition is is beyond the scope of this
+##workshop, but what you need to know is, if you have any,
+##your estimation is invalid
+##you also want to check the Rhat and bulk and tail ESSes
+##a rule of thumb is that Rhat should be less than 1.01
+##and the ESSes should be at least 600 in both categories
+##(though the higher precision you want your numerical estimation
+##the high ESSes you require)
+
+# => cor(Intercept,t)     0.57      0.26    -0.01     0.97
+# there might be some correlation between intercept and t BUT the CI is very large (-0.01, 0.97) and 0 correlation is part of it, so they also might not be correlated
+```
+```{r}
+pp_check(model_individual_differences)
+```
+
+```{r}
+plot_predictions(model_individual_differences, data)
+# => compared to the previous model the band is narrower, and more data points are contained within
+```
+## Setting priors
+```{r}
+##now we'll explore the interaction of priors and sample sizes
+##for the sake of time, we'll do two of each
+##so let's set up a second dataset with more individuals
+larger_data <- gen_data(50, 15)
+
+prior_strong <- c(prior(normal(17, 0.1), class = "b", coef = "Intercept"),
+                  prior(normal(1.7, 0.1), class = "b"),
+                  prior(exponential(1), class = "sd"),
+                  prior(lkj(1), class = "cor"))
+```
+
+```{r}
+##weak prior (i.e. initial), weak data (i.e. initial)
+summary(model_individual_differences)
+
+```
+
+
+```{r}
+##strong prior, weak data (i.e. initial data)
+strong_weak <- brm(obs_ct ~ t + (1+t|i) + 0 + Intercept, data = data,
+                   family = gauss, 
+                   prior = prior_strong,
+                   refresh = 0,
+                   control = list(adapt_delta = 0.95),
+                   cores = 4)
+summary(strong_weak)
+```
+```{r}
+##weak prior (i.e. initial), stronger data
+weak_strong <- brm(obs_ct ~ t + (1+t|i) + 0 + Intercept, data = larger_data,
+                   family = gauss,
+                   refresh = 0,
+                   control = list(adapt_delta = 0.95),
+                   cores = 4)
+summary(weak_strong)
+```
+```{r}
+##strong prior, stronger data
+strong_strong <- brm(obs_ct ~ t + (1+t|i) + 0 + Intercept, data = larger_data,
+                   family = gauss,
+                   prior = prior_strong,
+                   refresh = 0,
+                   control = list(adapt_delta = 0.95),
+                   cores = 4)
+summary(strong_strong)
+```
+```{r}
+tmp1 <- as_tibble(predict(strong_strong)) %>% 
+  mutate(type='strong prior - strong data')
+tmp1$true <- larger_data$obs_ct
+tmp1$ID <- larger_data$i
+tmp1$time <- larger_data$t
+
+tmp2 <- as_tibble(predict(weak_strong)) %>% 
+  mutate(type='weak prior - strong data')
+tmp2$true <- larger_data$obs_ct
+tmp2$ID <- larger_data$i
+tmp2$time <- larger_data$t
+  
+tmp <- rbind(tmp1, tmp2)
+
+ggplot(data = filter(tmp, as.numeric(as.character(ID)) <21)) + 
+    geom_ribbon(aes(x = time, ymin = Q2.5, ymax = Q97.5, fill=type), alpha = 0.5) +
+    geom_point(aes(x = time, y = true)) +
+    scale_y_reverse() +
+    facet_wrap(~ ID, ncol = 4)
+```
+```{r}
+tmp1 <- as_tibble(predict(model_individual_differences)) %>% 
+  mutate(type='weak prior - weak data')
+tmp1$true <- data$obs_ct
+tmp1$ID <- data$i
+tmp1$time <- data$t
+
+tmp2 <- as_tibble(predict(strong_weak)) %>% 
+  mutate(type='strong prior - weak data')
+tmp2$true <- data$obs_ct
+tmp2$ID <- data$i
+tmp2$time <- data$t
+  
+tmp <- rbind(tmp1, tmp2)
+
+ggplot(data = filter(tmp, as.numeric(as.character(ID)) <21)) + 
+    geom_ribbon(aes(x = time, ymin = Q2.5, ymax = Q97.5, fill=type), alpha = 0.5) +
+    geom_point(aes(x = time, y = true)) +
+    scale_y_reverse() +
+    facet_wrap(~ ID, ncol = 4)
+```
+```{r}
+smaller_data <- gen_data(5, 15)
+```
+
+```{r}
+##weak prior (i.e. initial), weakest data
+weak_weakest <- brm(obs_ct ~ t + (1+t|i) + 0 + Intercept, data = smaller_data,
+                   family = gauss,
+                   refresh = 0,
+                   control = list(adapt_delta = 0.95),
+                   cores = 4)
+summary(weak_weakest)
+```
+
+```{r}
+##strong prior, weakest data (only 5 individuals)
+strong_weakest <- brm(obs_ct ~ t + (1+t|i) + 0 + Intercept, data = smaller_data,
+                   family = gauss, 
+                   prior = prior_strong,
+                   refresh = 0,
+                   control = list(adapt_delta = 0.95),
+                   cores = 4)
+summary(strong_weakest)
+```
+
+```{r}
+tmp1 <- as_tibble(predict(weak_weakest)) %>% 
+  mutate(type='weak prior - weak data (n=5)')
+tmp1$true <- smaller_data$obs_ct
+tmp1$ID <- smaller_data$i
+tmp1$time <- smaller_data$t
+
+tmp2 <- as_tibble(predict(strong_weakest)) %>% 
+  mutate(type='strong prior - weak data (n=5)')
+tmp2$true <- smaller_data$obs_ct
+tmp2$ID <- smaller_data$i
+tmp2$time <- smaller_data$t
+  
+tmp <- rbind(tmp1, tmp2)
+
+ggplot(data = filter(tmp, as.numeric(as.character(ID)) <21)) + 
+    geom_ribbon(aes(x = time, ymin = Q2.5, ymax = Q97.5, fill=type), alpha = 0.5) +
+    geom_point(aes(x = time, y = true)) +
+    scale_y_reverse() +
+    facet_wrap(~ ID, ncol = 4)
+```
+
+```{r}
+# predict a new person to see the true difference between strong and weak prior
+predict1 <- predict(
+  strong_weakest,
+  newdata = tibble(
+    t = 0:15,
+    i = 4000
+  ),
+  allow_new_levels = TRUE,
+  sample_new_levels = "gaussian"
+)
+
+predict2 <- predict(
+  weak_weakest,
+  newdata = tibble(
+    t = 0:15,
+    i = 4000
+  ),
+  allow_new_levels = TRUE,
+  sample_new_levels = "gaussian"
+)
+```
+
+```{r}
+tmp1 <- as_tibble(predict1) %>% 
+  mutate(type='strong prior - weak data (n=5)')
+tmp1$ID <- 1
+tmp1$time <- 0:15
+
+tmp2 <- as_tibble(predict2) %>% 
+  mutate(type='weak prior - weak data (n=5)')
+tmp2$ID <- 1
+tmp2$time <- 0:15
+  
+tmp <- rbind(tmp1, tmp2)
+
+ggplot(data = filter(tmp, as.numeric(as.character(ID)) <21)) + 
+    geom_ribbon(aes(x = time, ymin = Q2.5, ymax = Q97.5, fill=type), alpha = 0.5) +
+    geom_point(aes(x = time, y = Estimate, color=type)) +
+    scale_y_reverse() +
+    facet_wrap(~ ID, ncol = 4)
+```
+
